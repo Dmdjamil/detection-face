@@ -3,5 +3,5 @@ opencv-python-headless
 Pillow>=10.2.0
 numpy
 streamlit-webrtc
-
+av
 
