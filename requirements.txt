@@ -1,7 +1,5 @@
-opencv-python-headless
-Pillow>=10.2.0
-numpy
-av
 streamlit>=1.40.0
-streamlit-webrtc>=0.48.1
-
+streamlit-webrtc>=0.48.1   # version minimale recommandée pour corriger les bugs de shutdown
+opencv-python-headless
+Pillow
+av
