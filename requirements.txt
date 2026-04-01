@@ -2,4 +2,6 @@ streamlit
 opencv-python-headless
 Pillow>=10.2.0
 numpy
-pip install streamlit-webrtc opencv-python-headless av
+streamlit-webrtc
+
+
