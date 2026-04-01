@@ -50,16 +50,16 @@ def detect_faces(color, min_neighbors, scale_factor, save_faces):
     cap.release()
     
 #Afficher les images capturer 
-"""
+
 if os.path.exists("faces"):
     st.subheader("📂 Images sauvegardées")
 
     for file in os.listdir("faces"):
         img = Image.open(os.path.join("faces", file))
         st.image(img, caption=file)
-"""
+
 def app():
-    st.title("📸 Détection de visages (Streamlit + OpenCV)")
+    st.title("📸 Détection de visages ")
 
     # 🎨 Couleur
     color_hex = st.color_picker("Couleur du rectangle", "#00FF00")
