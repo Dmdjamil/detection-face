@@ -10,6 +10,29 @@ import time
 face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
+import streamlit as st
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
+
+st.title("📹 Flux Webcam en direct avec Streamlit")
+
+# Configuration pour la connexion WebRTC (STUN server)
+RTC_CONFIGURATION = {
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+}
+
+# Affichage du flux webcam
+webrtc_streamer(
+    key="webcam",                     # Clé unique obligatoire
+    mode=WebRtcMode.SENDRECV,         # Envoi et réception du flux
+    rtc_configuration=RTC_CONFIGURATION,
+    media_stream_constraints={
+        "video": True,
+        "audio": False                # Mettre True si tu veux aussi le son
+    },
+    # sendback_audio=False  # Optionnel selon tes besoins
+)
+
+st.info("Autorise l'accès à ta webcam quand le navigateur te le demande.")
 
 class FaceDetector(VideoTransformerBase):
     def __init__(self, color, min_neighbors, scale_factor, save_faces):
