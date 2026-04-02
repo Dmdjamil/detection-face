@@ -3,3 +3,19 @@ streamlit-webrtc>=0.48.1   # version minimale recommandée pour corriger les bug
 opencv-python-headless
 Pillow
 av
+# requirements.txt
+# Dépendances pour le système de surveillance avec OpenCV et email
+
+# Bibliothèque principale pour la vision par ordinateur et détection de visages
+opencv-python>=4.8.0
+
+# Calcul numérique (utilisé avec OpenCV)
+numpy>=1.24.0
+
+# Les modules suivants font partie de la bibliothèque standard de Python :
+# - smtplib
+# - os
+# - json
+# - time
+# - datetime
+# - email.mime (MIMEMultipart, MIMEText, MIMEImage)
