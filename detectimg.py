@@ -9,7 +9,7 @@ face_cascade = cv2.CascadeClassifier(
 )
 
 def detect_faces(color, min_neighbors, scale_factor, save_faces):
-    cap = cv2.VideoCapture(0)
+    webrtc_streamer(keys="sample")
     frame_window = st.image([])  # zone d'affichage
     count = 0
 
