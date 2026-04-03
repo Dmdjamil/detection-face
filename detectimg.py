@@ -3,13 +3,14 @@ import streamlit as st
 import os
 from PIL import Image
 from streamlit_webrtc import webrtc_streamer
+
 # Charger le modèle Haarcascade
 face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
 )
 webrtc_streamer(key="sample")
 def detect_faces(color, min_neighbors, scale_factor, save_faces):
-    webrtc_streamer(keys="sample")
+    webrtc_streamer(key="sample")
     frame_window = st.image([])  # zone d'affichage
     count = 0
 
@@ -50,16 +51,14 @@ def detect_faces(color, min_neighbors, scale_factor, save_faces):
     cap.release()
     
 #Afficher les images capturer 
-"""
 if os.path.exists("faces"):
     st.subheader("📂 Images sauvegardées")
 
     for file in os.listdir("faces"):
         img = Image.open(os.path.join("faces", file))
         st.image(img, caption=file)
-"""
 def app():
-    st.title("📸 Détection de visages (Streamlit + OpenCV)")
+    st.title("📸 Détection de visages ")
 
     # 🎨 Couleur
     color_hex = st.color_picker("Couleur du rectangle", "#00FF00")
