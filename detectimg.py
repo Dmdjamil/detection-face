@@ -289,4 +289,4 @@ class CameraInputMixin:
     @property
     def dg(self) -> DeltaGenerator:
         """Get our DeltaGenerator."""
-        return cast("DeltaGenerator", self) genere un fichier requiement
+        return cast("DeltaGenerator", self) 
