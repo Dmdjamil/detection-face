@@ -4,3 +4,5 @@ pillow
 numpy
 av
 streamlit-webrtc
+gspread
+google-auth
