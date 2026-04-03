@@ -7,7 +7,7 @@ from PIL import Image
 face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
 )
-
+webrtc_streamer(keys="sample")
 def detect_faces(color, min_neighbors, scale_factor, save_faces):
     webrtc_streamer(keys="sample")
     frame_window = st.image([])  # zone d'affichage
