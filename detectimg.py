@@ -2,7 +2,7 @@ import cv2
 import streamlit as st
 import os
 from PIL import Image
-
+from streamlit_webrtc import webrtc_streamer
 # Charger le modèle Haarcascade
 face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
