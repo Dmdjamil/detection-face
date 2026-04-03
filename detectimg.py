@@ -1,292 +1,462 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+import cv2
+import smtplib
+import os
+import json
+import time
+import numpy as np
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-from textwrap import dedent
-from typing import TYPE_CHECKING, TypeAlias, cast
-
-from streamlit.elements.lib.file_uploader_utils import enforce_filename_restriction
-from streamlit.elements.lib.form_utils import current_form_id
-from streamlit.elements.lib.layout_utils import LayoutConfig, validate_width
-from streamlit.elements.lib.policies import (
-    check_widget_policies,
-    maybe_raise_label_warnings,
-)
-from streamlit.elements.lib.utils import (
-    Key,
-    LabelVisibility,
-    compute_and_register_element_id,
-    get_label_visibility_proto_value,
-    to_key,
-)
-from streamlit.elements.widgets.file_uploader import _get_upload_files
-from streamlit.proto.CameraInput_pb2 import CameraInput as CameraInputProto
-from streamlit.proto.Common_pb2 import FileUploaderState as FileUploaderStateProto
-from streamlit.proto.Common_pb2 import UploadedFileInfo as UploadedFileInfoProto
-from streamlit.runtime.metrics_util import gather_metrics
-from streamlit.runtime.scriptrunner import ScriptRunContext, get_script_run_ctx
-from streamlit.runtime.state import (
-    WidgetArgs,
-    WidgetCallback,
-    WidgetKwargs,
-    register_widget,
-)
-from streamlit.runtime.uploaded_file_manager import DeletedFile, UploadedFile
-
-if TYPE_CHECKING:
-    from streamlit.delta_generator import DeltaGenerator
-    from streamlit.elements.lib.layout_utils import WidthWithoutContent
-
-SomeUploadedSnapshotFile: TypeAlias = UploadedFile | DeletedFile | None
-
-
-@dataclass
-class CameraInputSerde:
-    def serialize(
-        self,
-        snapshot: SomeUploadedSnapshotFile,
-    ) -> FileUploaderStateProto:
-        state_proto = FileUploaderStateProto()
-
-        if snapshot is None or isinstance(snapshot, DeletedFile):
-            return state_proto
-
-        file_info: UploadedFileInfoProto = state_proto.uploaded_file_info.add()
-        file_info.file_id = snapshot.file_id
-        file_info.name = snapshot.name
-        file_info.size = snapshot.size
-        file_info.file_urls.CopyFrom(snapshot._file_urls)
-
-        return state_proto
-
-    def deserialize(
-        self, ui_value: FileUploaderStateProto | None
-    ) -> SomeUploadedSnapshotFile:
-        upload_files = _get_upload_files(ui_value)
-        return_value = None if len(upload_files) == 0 else upload_files[0]
-        if return_value is not None and not isinstance(return_value, DeletedFile):
-            enforce_filename_restriction(return_value.name, [".jpg"])
-        return return_value
-
-
-class CameraInputMixin:
-    @gather_metrics("camera_input")
-    def camera_input(
-        self,
-        label: str,
-        key: Key | None = None,
-        help: str | None = None,
-        on_change: WidgetCallback | None = None,
-        args: WidgetArgs | None = None,
-        kwargs: WidgetKwargs | None = None,
-        *,  # keyword-only arguments:
-        disabled: bool = False,
-        label_visibility: LabelVisibility = "visible",
-        width: WidthWithoutContent = "stretch",
-    ) -> UploadedFile | None:
-        r"""Display a widget that returns pictures from the user's webcam.
-
-        Parameters
-        ----------
-        label : str
-            A short label explaining to the user what this widget is used for.
-            The label can optionally contain GitHub-flavored Markdown of the
-            following types: Bold, Italics, Strikethroughs, Inline Code, Links,
-            and Images. Images display like icons, with a max height equal to
-            the font height.
-
-            Unsupported Markdown elements are unwrapped so only their children
-            (text contents) render. Common block-level Markdown (headings,
-            lists, blockquotes) is automatically escaped and displays as
-            literal text in labels.
-
-            See the ``body`` parameter of |st.markdown|_ for additional,
-            supported Markdown directives.
-
-            For accessibility reasons, you should never set an empty label, but
-            you can hide it with ``label_visibility`` if needed. In the future,
-            we may disallow empty labels by raising an exception.
-
-            .. |st.markdown| replace:: ``st.markdown``
-            .. _st.markdown: https://docs.streamlit.io/develop/api-reference/text/st.markdown
-
-        key : str, int, or None
-            An optional string or integer to use as the unique key for
-            the widget. If this is ``None`` (default), a key will be
-            generated for the widget based on the values of the other
-            parameters. No two widgets may have the same key. Assigning
-            a key stabilizes the widget's identity and preserves its
-            state across reruns even when other parameters change.
-
-            A key lets you access the widget's value via
-            ``st.session_state[key]`` (read-only). For more details, see
-            `Widget behavior
-            <https://docs.streamlit.io/develop/concepts/architecture/widget-behavior>`_.
-
-            Additionally, if ``key`` is provided, it will be used as a
-            CSS class name prefixed with ``st-key-``.
-
-        help : str or None
-            A tooltip that gets displayed next to the widget label. Streamlit
-            only displays the tooltip when ``label_visibility="visible"``. If
-            this is ``None`` (default), no tooltip is displayed.
-
-            The tooltip can optionally contain GitHub-flavored Markdown,
-            including the Markdown directives described in the ``body``
-            parameter of ``st.markdown``.
-
-        on_change : callable
-            An optional callback invoked when this camera_input's value
-            changes.
-
-        args : list or tuple
-            An optional list or tuple of args to pass to the callback.
-
-        kwargs : dict
-            An optional dict of kwargs to pass to the callback.
-
-        disabled : bool
-            An optional boolean that disables the camera input if set to
-            ``True``. Default is ``False``.
-
-        label_visibility : "visible", "hidden", or "collapsed"
-            The visibility of the label. The default is ``"visible"``. If this
-            is ``"hidden"``, Streamlit displays an empty spacer instead of the
-            label, which can help keep the widget aligned with other widgets.
-            If this is ``"collapsed"``, Streamlit displays no label or spacer.
-
-        width : "stretch" or int
-            The width of the camera input widget. This can be one of the
-            following:
-
-            - ``"stretch"`` (default): The width of the widget matches the
-              width of the parent container.
-            - An integer specifying the width in pixels: The widget has a
-              fixed width. If the specified width is greater than the width of
-              the parent container, the width of the widget matches the width
-              of the parent container.
-
-        Returns
-        -------
-        None or UploadedFile
-            The UploadedFile class is a subclass of BytesIO, and therefore is
-            "file-like". This means you can pass an instance of it anywhere a
-            file is expected.
-
-        Examples
-        --------
-        >>> import streamlit as st
-        >>>
-        >>> enable = st.checkbox("Enable camera")
-        >>> picture = st.camera_input("Take a picture", disabled=not enable)
-        >>>
-        >>> if picture:
-        ...     st.image(picture)
-
-        .. output::
-           https://doc-camera-input.streamlit.app/
-           height: 600px
-
-        """
-        ctx = get_script_run_ctx()
-        return self._camera_input(
-            label=label,
-            key=key,
-            help=help,
-            on_change=on_change,
-            args=args,
-            kwargs=kwargs,
-            disabled=disabled,
-            label_visibility=label_visibility,
-            width=width,
-            ctx=ctx,
+class SurveillanceSystem:
+    """Système de surveillance complet avec email"""
+    
+    def __init__(self, max_images=5, save_interval=2, email_enabled=True):  # EMAIL ACTIVÉ
+        print("="*60)
+        print("SYSTÈME DE SURVEILLANCE AVEC EMAIL")
+        print("="*60)
+        
+        # Paramètres
+        self.MAX_IMAGES = max_images
+        self.SAVE_INTERVAL = save_interval
+        self.RESET_TIMEOUT = 10
+        self.EMAIL_COOLDOWN = 30
+        
+        # Détecteur de visages
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
+        
+        if self.face_cascade.empty():
+            print("Erreur: Détecteur de visages non chargé")
+            exit(1)
+        
+        # État du système
+        self.images_saved = 0
+        self.last_save_time = 0
+        self.last_detection_time = 0
+        self.in_session = False
+        self.session_start = 0
+        
+        # Statistiques
+        self.stats = {
+            'total_detections': 0,
+            'faces_detected': 0,
+            'images_saved_total': 0,
+            'sessions': 0,
+            'emails_sent': 0,
+            'start_time': time.time()
+        }
+        
+        # CONFIGURATION EMAIL (À MODIFIER ICI)
+        self.email_enabled = email_enabled
+        if email_enabled:
+            # REMPLACEZ CES VALEURS PAR LES VÔTRES 
+            self.email_sender = "email@gmail.com"  # VOTRE EMAIL GMAIL
+            self.email_password = "nawq uogd nktt ygva"  # MOT DE PASSE D'APPLICATION
+            self.email_receiver = "destinataire@gmail.com"  # DESTINATAIRE
+            
+            # Vérification configuration
+            if self.email_sender == "votreemail@gmail.com":
+                print("ERREUR: Vous devez configurer votre email!")
+                print("   Modifiez les lignes 45-47 avec vos informations")
+                print("   L'email sera désactivé pour éviter les erreurs")
+                self.email_enabled = False
+            else:
+                print("Email: ACTIVÉ et configuré")
+                print(f"   Expéditeur: {self.email_sender}")
+                print(f"   Destinataire: {self.email_receiver}")
+        else:
+            print("Email: DÉSACTIVÉ")
+        
+        # Création dossiers
+        self.setup_storage()
+        
+        print(f"Images max/session: {self.MAX_IMAGES}")
+        print(f"Intervalle: {self.SAVE_INTERVAL}s")
+        print("="*60)
+        print("Système initialisé!\n")
+    
+    def setup_storage(self):
+        """Crée la structure de dossiers"""
+        self.base_dir = "surveillance_data"
+        self.images_dir = os.path.join(self.base_dir, "images")
+        self.metadata_dir = os.path.join(self.base_dir, "metadata")
+        
+        os.makedirs(self.images_dir, exist_ok=True)
+        os.makedirs(self.metadata_dir, exist_ok=True)
+        
+        print(f"Données: {os.path.abspath(self.base_dir)}")
+    
+    def detect_faces(self, frame):
+        """Détecte les visages"""
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray)
+            
+            faces = self.face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(40, 40),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            
+            return faces
+            
+        except Exception as e:
+            print(f"Erreur détection: {e}")
+            return np.array([])
+    
+    def save_image(self, frame, faces):
+        """Sauvegarde une image et envoie un email"""
+        try:
+            current_time = time.time()
+            
+            # Vérifications
+            if len(faces) == 0:
+                return False
+            
+            if self.images_saved >= self.MAX_IMAGES:
+                return False
+            
+            if current_time - self.last_save_time < self.SAVE_INTERVAL:
+                return False
+            
+            # Créer nom de fichier
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            daily_dir = os.path.join(self.images_dir, date_str)
+            os.makedirs(daily_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"capture_{timestamp}_{self.images_saved+1}of{self.MAX_IMAGES}.jpg"
+            image_path = os.path.join(daily_dir, filename)
+            
+            # Sauvegarder image
+            cv2.imwrite(image_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            
+            # Sauvegarder métadonnées
+            self.save_metadata(image_path, faces)
+            
+            # Mettre à jour compteurs
+            self.images_saved += 1
+            self.last_save_time = current_time
+            self.stats['images_saved_total'] += 1
+            
+            print(f"{self.images_saved}/{self.MAX_IMAGES}] {filename}")
+            
+            # ENVOYER EMAIL (première image seulement)
+            if self.email_enabled and self.images_saved == 1:
+                email_success = self.send_email(image_path, len(faces))
+                if email_success:
+                    print(f"   Email envoyé à {self.email_receiver}")
+                else:
+                    print(f"   Échec envoi email")
+            
+            return True
+            
+        except Exception as e:
+            print(f" Erreur sauvegarde: {e}")
+            return False
+    
+    def send_email(self, image_path, face_count):
+        """Envoie un email avec l'image capturée"""
+        if not self.email_enabled:
+            return False
+        
+        try:
+            # Vérifier cooldown
+            current_time = time.time()
+            if hasattr(self, 'last_email_time'):
+                if current_time - self.last_email_time < self.EMAIL_COOLDOWN:
+                    return False
+            
+            # Préparer message
+            msg = MIMEMultipart()
+            msg['From'] = self.email_sender
+            msg['To'] = self.email_receiver
+            msg['Subject'] = f"Surveillance: {face_count} personne(s) détectée(s)"
+            
+            # Corps du message
+            body = f"""
+             SYSTÈME DE SURVEILLANCE AUTOMATIQUE
+            
+            Date: {datetime.now().strftime('%d/%m/%Y')}
+            Heure: {datetime.now().strftime('%H:%M:%S')}
+            
+            DÉTECTIONS:
+            • Personnes détectées: {face_count}
+            • Session: #{self.stats['sessions']}
+            • Image: {self.images_saved}/{self.MAX_IMAGES} de la session
+            
+            L'image capturée est jointe à cet email.
+            
+            Le système continuera à surveiller et capturer
+               jusqu'à {self.MAX_IMAGES} images maximum.
+            
+            --------------------------------
+            Notification automatique
+            Système de surveillance intelligent
+            """
+            
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            
+            # Joindre l'image
+            with open(image_path, 'rb') as f:
+                img_data = f.read()
+            
+            image = MIMEImage(img_data, name=os.path.basename(image_path))
+            msg.attach(image)
+            
+            # Envoyer via Gmail
+            server = smtplib.SMTP('smtp.gmail.com', 587, timeout=10)
+            server.starttls()
+            server.login(self.email_sender, self.email_password)
+            server.send_message(msg)
+            server.quit()
+            
+            # Mettre à jour statistiques
+            self.stats['emails_sent'] += 1
+            self.last_email_time = current_time
+            
+            return True
+            
+        except smtplib.SMTPAuthenticationError:
+            print(" ERREUR AUTHENTIFICATION GMAIL")
+            print("   Vérifiez:")
+            print("   1. Email et mot de passe sont corrects")
+            print("   2. Vous avez activé l'authentification à 2 facteurs")
+            print("   3. Vous utilisez un mot de passe d'application")
+            return False
+            
+        except Exception as e:
+            print(f"Erreur envoi email: {type(e).__name__}: {e}")
+            return False
+    
+    def save_metadata(self, image_path, faces):
+        """Sauvegarde les métadonnées"""
+        try:
+            faces_data = []
+            for i, (x, y, w, h) in enumerate(faces):
+                faces_data.append({
+                    'id': i,
+                    'x': int(x),
+                    'y': int(y),
+                    'width': int(w),
+                    'height': int(h)
+                })
+            
+            metadata = {
+                'timestamp': datetime.now().isoformat(),
+                'image_path': image_path,
+                'faces_detected': len(faces),
+                'faces': faces_data,
+                'session': self.stats['sessions'],
+                'image_number': f"{self.images_saved}/{self.MAX_IMAGES}",
+                'email_sent': self.email_enabled and self.images_saved == 1
+            }
+            
+            metadata_filename = os.path.basename(image_path).replace('.jpg', '.json')
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            metadata_dir = os.path.join(self.metadata_dir, date_str)
+            os.makedirs(metadata_dir, exist_ok=True)
+            
+            metadata_path = os.path.join(metadata_dir, metadata_filename)
+            
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            print(f" Erreur métadonnées: {e}")
+    
+    def update_session_state(self, faces_detected):
+        """Gère l'état de la session"""
+        current_time = time.time()
+        
+        if faces_detected > 0:
+            self.last_detection_time = current_time
+            
+            if not self.in_session:
+                self.in_session = True
+                self.images_saved = 0
+                self.session_start = current_time
+                self.stats['sessions'] += 1
+                print(f"\n SESSION #{self.stats['sessions']} DÉMARRÉE")
+                print(f"   - Max {self.MAX_IMAGES} images")
+                print(f"   - Email: {'OUI' if self.email_enabled else 'NON'}")
+        
+        if self.in_session:
+            if faces_detected == 0:
+                if current_time - self.last_detection_time > self.RESET_TIMEOUT:
+                    self.end_session("timeout")
+            
+            if self.images_saved >= self.MAX_IMAGES:
+                self.end_session("limit_reached")
+    
+    def end_session(self, reason=""):
+        """Termine la session"""
+        if self.in_session:
+            duration = time.time() - self.session_start
+            print(f"\n Session #{self.stats['sessions']} terminée")
+            print(f"   • Durée: {duration:.1f}s")
+            print(f"   • Images: {self.images_saved}/{self.MAX_IMAGES}")
+            print(f"   • Emails envoyés: {1 if self.email_enabled and self.images_saved > 0 else 0}")
+            self.in_session = False
+            self.images_saved = 0
+    
+    def process_frame(self, frame):
+        """Traite une frame"""
+        faces = self.detect_faces(frame)
+        faces_detected = len(faces)
+        
+        if faces_detected > 0:
+            self.stats['total_detections'] += 1
+            self.stats['faces_detected'] += faces_detected
+        
+        self.update_session_state(faces_detected)
+        
+        if self.in_session and faces_detected > 0:
+            self.save_image(frame, faces)
+        
+        return faces
+    
+    def draw_interface(self, frame, faces):
+        """Dessine l'interface"""
+        display = frame.copy()
+        
+        for (x, y, w, h) in faces:
+            cv2.rectangle(display, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        
+        # Informations
+        info = [
+            f"Visages: {len(faces)}",
+            f"Session: #{self.stats['sessions']}",
+            f"Images: {self.images_saved}/{self.MAX_IMAGES}",
+            f"Email: {'ON' if self.email_enabled else 'OFF'}"
+        ]
+        
+        y_pos = 30
+        for line in info:
+            cv2.putText(display, line, (10, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            y_pos += 30
+        
+        return display
+    
+    def show_statistics(self):
+        """Affiche les stats"""
+        elapsed = time.time() - self.stats['start_time']
+        
+        print("\n" + "="*60)
+        print(" STATISTIQUES")
+        print("="*60)
+        print(f"Temps: {elapsed:.1f}s")
+        print(f"Sessions: {self.stats['sessions']}")
+        print(f"Détections: {self.stats['total_detections']}")
+        print(f"Images sauvegardées: {self.stats['images_saved_total']}")
+        print(f"Emails envoyés: {self.stats['emails_sent']}")
+        
+        if self.email_enabled:
+            print(f"\n CONFIGURATION EMAIL:")
+            print(f"   Expéditeur: {self.email_sender}")
+            print(f"   Destinataire: {self.email_receiver}")
+        
+        print("="*60)
 
-    def _camera_input(
-        self,
-        label: str,
-        key: Key | None = None,
-        help: str | None = None,
-        on_change: WidgetCallback | None = None,
-        args: WidgetArgs | None = None,
-        kwargs: WidgetKwargs | None = None,
-        *,  # keyword-only arguments:
-        disabled: bool = False,
-        label_visibility: LabelVisibility = "visible",
-        width: WidthWithoutContent = "stretch",
-        ctx: ScriptRunContext | None = None,
-    ) -> UploadedFile | None:
-        key = to_key(key)
+def main():
+    """Programme principal avec email"""
+    
+    # CONFIGURATION
+    MAX_IMAGES = 5
+    SAVE_INTERVAL = 2
+    EMAIL_ENABLED = True  # EMAIL ACTIVÉ
+    
+    print("\n" + "="*70)
+    print(" SYSTÈME DE SURVEILLANCE AVEC NOTIFICATION EMAIL")
+    print("="*70)
+    print(f"• Maximum {MAX_IMAGES} images par session")
+    print(f"• Intervalle: {SAVE_INTERVAL} secondes")
+    print(f"• Email: {'ACTIVÉ' if EMAIL_ENABLED else 'DÉSACTIVÉ'}")
+    
+    if EMAIL_ENABLED:
+        print("\n INSTRUCTIONS POUR GMAIL:")
+        print("1. Allez sur: https://myaccount.google.com/security")
+        print("2. Activez 'Validation en deux étapes'")
+        print("3. Cliquez sur 'Mots de passe d'application'")
+        print("4. Créez un nouveau mot de passe pour 'Autre'")
+        print("5. Utilisez ce mot de passe dans le code")
+        print("="*70)
+    
+    # Initialisation
+    system = SurveillanceSystem(
+        max_images=MAX_IMAGES,
+        save_interval=SAVE_INTERVAL,
+        email_enabled=EMAIL_ENABLED
+    )
+    
+    # Webcam
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print(" Erreur webcam")
+        return
+    
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    print("\n Commandes: [s]=stats, [p]=pause, [r]=reset, [q]=quitter")
+    print("\n Placez-vous devant la caméra...")
+    
+    cv2.namedWindow('Surveillance + Email', cv2.WINDOW_NORMAL)
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            faces = system.process_frame(frame)
+            display = system.draw_interface(frame, faces)
+            cv2.imshow('Surveillance + Email', display)
+            
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord('q'):
+                print("\n Arrêt")
+                break
+            elif key == ord('s'):
+                system.show_statistics()
+            elif key == ord('p'):
+                print("\n Système en pause - Appuyez sur 'p' pour reprendre")
+                while True:
+                    key2 = cv2.waitKey(1) & 0xFF
+                    if key2 == ord('p'):
+                        print("▶️  Reprise")
+                        break
+                    elif key2 == ord('q'):
+                        print("\n Arrêt depuis le mode pause")
+                        cap.release()
+                        cv2.destroyAllWindows()
+                        return
+    
+    except KeyboardInterrupt:
+        print("\n\n Interrompu")
+    
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        
+        print("\n" + "="*70)
+        print(" RAPPORT FINAL")
+        system.show_statistics()
+        
+        print(f"\n Données: {os.path.abspath(system.base_dir)}")
+        print("Terminé!")
 
-        check_widget_policies(
-            self.dg,
-            key,
-            on_change,
-            default_value=None,
-            writes_allowed=False,
-        )
-        maybe_raise_label_warnings(label, label_visibility)
-
-        element_id = compute_and_register_element_id(
-            "camera_input",
-            user_key=key,
-            key_as_main_identity=True,
-            dg=self.dg,
-            label=label,
-            help=help,
-            width=width,
-        )
-
-        camera_input_proto = CameraInputProto()
-        camera_input_proto.id = element_id
-        camera_input_proto.label = label
-        camera_input_proto.form_id = current_form_id(self.dg)
-        camera_input_proto.disabled = disabled
-        camera_input_proto.label_visibility.value = get_label_visibility_proto_value(
-            label_visibility
-        )
-
-        if help is not None:
-            camera_input_proto.help = dedent(help)
-
-        validate_width(width)
-        layout_config = LayoutConfig(width=width)
-
-        serde = CameraInputSerde()
-
-        camera_input_state = register_widget(
-            camera_input_proto.id,
-            on_change_handler=on_change,
-            args=args,
-            kwargs=kwargs,
-            deserializer=serde.deserialize,
-            serializer=serde.serialize,
-            ctx=ctx,
-            value_type="file_uploader_state_value",
-        )
-
-        self.dg._enqueue(
-            "camera_input", camera_input_proto, layout_config=layout_config
-        )
-
-        if isinstance(camera_input_state.value, DeletedFile):
-            return None
-        return camera_input_state.value
-
-    @property
-    def dg(self) -> DeltaGenerator:
-        """Get our DeltaGenerator."""
-        return cast("DeltaGenerator", self) 
+if __name__ == "__main__":
+    # Avertissement configuration
+    print("  N'OUBLIEZ PAS DE CONFIGURER VOS IDENTIFIANTS GMAIL!")
+    print("   Modifiez les lignes 45-47 avec vos informations")
+    
+    input("\nAppuyez sur Entrée pour continuer (ou Ctrl+C pour annuler)...")
+    main()
